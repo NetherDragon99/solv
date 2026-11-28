@@ -38,6 +38,8 @@ import {
 } from '../utils/smsInboxStore';
 import { formatCurrency } from '../utils/dateCycle';
 
+const SMS_ONBOARDING_SEEN_KEY = 'mm_sms_onboarding_seen_v1';
+
 type PeriodDaysOption = 7 | 30 | 90 | 0; // 0 = All
 
 interface DeviceMessagesModalProps {
@@ -63,9 +65,18 @@ export const DeviceMessagesModal: React.FC<DeviceMessagesModalProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [bundleVersion, setBundleVersion] = useState<number>(0);
 
-  // Paste / Import & Webhook Setup Drawer
+  // Paste / Import & Webhook Setup Drawer + First-Time Onboarding Modal
   const [showAddMessagesSheet, setShowAddMessagesSheet] = useState<boolean>(false);
   const [showWebhookSetup, setShowWebhookSetup] = useState<boolean>(false);
+  const [showSetupWizard, setShowSetupWizard] = useState<boolean>(() => {
+    try {
+      const seen = localStorage.getItem(SMS_ONBOARDING_SEEN_KEY) === '1';
+      const existingCount = loadSmsInboxSync().messages.length;
+      return !seen && existingCount === 0;
+    } catch {
+      return false;
+    }
+  });
   const [pasteSender, setPasteSender] = useState<string>('');
   const [pasteBody, setPasteBody] = useState<string>('');
   const [newWatchInput, setNewWatchInput] = useState<string>('');
@@ -82,16 +93,29 @@ export const DeviceMessagesModal: React.FC<DeviceMessagesModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
+    try {
+      if (
+        localStorage.getItem(SMS_ONBOARDING_SEEN_KEY) !== '1' &&
+        loadSmsInboxSync().messages.length === 0
+      ) {
+        setShowSetupWizard(true);
+      }
+    } catch {}
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (showAddMessagesSheet) setShowAddMessagesSheet(false);
+        if (showSetupWizard) {
+          try {
+            localStorage.setItem(SMS_ONBOARDING_SEEN_KEY, '1');
+          } catch {}
+          setShowSetupWizard(false);
+        } else if (showAddMessagesSheet) setShowAddMessagesSheet(false);
         else if (showWebhookSetup) setShowWebhookSetup(false);
         else onClose();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, showAddMessagesSheet, showWebhookSetup, onClose]);
+  }, [isOpen, showSetupWizard, showAddMessagesSheet, showWebhookSetup, onClose]);
 
   const bundle = useMemo(() => {
     void bundleVersion;
@@ -150,6 +174,45 @@ export const DeviceMessagesModal: React.FC<DeviceMessagesModalProps> = ({
   );
 
   if (!isOpen) return null;
+
+  const dismissWizardAndRemember = () => {
+    try {
+      localStorage.setItem(SMS_ONBOARDING_SEEN_KEY, '1');
+    } catch {}
+    setShowSetupWizard(false);
+  };
+
+  // Triggers the native Browser Clipboard Permission prompt ("Allow solv to read clipboard?") to import copied SMS in 1 tap!
+  const handleQuickClipboardPermissionPaste = async () => {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      setShowSetupWizard(false);
+      setShowAddMessagesSheet(true);
+      return;
+    }
+    try {
+      const clipText = await navigator.clipboard.readText();
+      if (!clipText || !clipText.trim()) {
+        showToast(t('smsClipboardEmptyToast'), 'info');
+        return;
+      }
+      const parsed = parseImportedSmsContent(clipText, pasteSender.trim() || 'SMS');
+      if (parsed.length === 0) {
+        showToast(t('smsClipboardEmptyToast'), 'info');
+        return;
+      }
+      await ingestSmsMessages(
+        parsed.map((p) => ({ ...p, source: 'paste' as const })),
+        settings.language
+      );
+      dismissWizardAndRemember();
+      setActiveTab('device');
+      showToast(t('smsImportedSuccessToast'), 'success');
+    } catch {
+      // Browser denied clipboard read or needs manual paste -> open manual paste sheet
+      dismissWizardAndRemember();
+      setShowAddMessagesSheet(true);
+    }
+  };
 
   const handleCopyWebhook = async () => {
     try {
@@ -229,18 +292,25 @@ export const DeviceMessagesModal: React.FC<DeviceMessagesModalProps> = ({
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
-            onClick={() => {
-              setShowWebhookSetup((v) => !v);
-              setShowAddMessagesSheet(false);
-            }}
+            onClick={handleQuickClipboardPermissionPaste}
+            title={t('smsQuickClipboardBtn')}
+            className="min-h-[44px] px-2.5 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1.5 cursor-pointer active:scale-[0.97]"
+          >
+            <ClipboardPaste className="w-4 h-4 shrink-0" />
+            <span className="hidden md:inline">{t('smsQuickClipboardBtn')}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowSetupWizard(true)}
             className={`min-h-[44px] px-3 rounded-xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer active:scale-[0.97] ${
-              showWebhookSetup
-                ? 'bg-[var(--accent-primary)] border-[var(--accent-primary)] text-white'
+              showWebhookSetup || showSetupWizard
+                ? 'bg-[var(--accent-primary)] border-[var(--accent-primary)] text-[var(--text-on-accent)]'
                 : 'bg-[var(--bg-tertiary)] border-[var(--border-subtle)] text-[var(--text-primary)]'
             }`}
           >
             <Link2 className="w-4 h-4 shrink-0" />
-            <span className="hidden sm:inline">{t('smsWebhookBtn')}</span>
+            <span className="hidden sm:inline">{t('smsSetupGuideBtn')}</span>
           </button>
 
           <button
@@ -587,6 +657,14 @@ export const DeviceMessagesModal: React.FC<DeviceMessagesModalProps> = ({
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
               {activeTab === 'approved' ? t('smsEmptyApprovedDesc') : t('smsEmptyDeviceDesc')}
             </p>
+            <button
+              type="button"
+              onClick={() => setShowSetupWizard(true)}
+              className="min-h-[42px] px-4 rounded-xl bg-[var(--accent-primary)] text-[var(--text-on-accent)] text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.97]"
+            >
+              <Link2 className="w-4 h-4" />
+              <span>{t('smsSetupGuideBtn')}</span>
+            </button>
           </div>
         ) : (
           (activeTab === 'approved' ? approvedMessages : filteredDeviceMessages).map((msg) => {
@@ -801,6 +879,127 @@ export const DeviceMessagesModal: React.FC<DeviceMessagesModalProps> = ({
           })
         )}
       </div>
+
+      {/* First-Time Guided Setup & Permission Modal for Web / PWA SMS Connection */}
+      {showSetupWizard && (
+        <div
+          className="fixed inset-0 z-[320] bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={dismissWizardAndRemember}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom))' }}
+            className="w-full sm:max-w-lg max-h-[90dvh] overflow-y-auto overscroll-contain rounded-t-[22px] sm:rounded-[22px] bg-[var(--bg-secondary)] border border-[var(--border-strong)] p-5 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <h3 className="text-base font-extrabold text-[var(--text-primary)]">
+                  {t('smsOnboardingTitle')}
+                </h3>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                  {t('smsOnboardingWhyNote')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={dismissWizardAndRemember}
+                aria-label={t('cancel')}
+                className="min-w-[38px] min-h-[38px] rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] flex items-center justify-center shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Option 1: Automatic Live SMS Webhook (iOS Shortcuts / Android Forwarder) */}
+            <div className="p-3.5 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-[var(--accent-primary)]">
+                <Link2 className="w-4 h-4 shrink-0" />
+                <span>{t('smsOnboardingStep1Title')}</span>
+              </div>
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                {t('smsOnboardingStep1Desc')}
+              </p>
+              <div className="flex items-center gap-2">
+                <div
+                  dir="ltr"
+                  className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] text-[11px] font-mono truncate text-[var(--text-primary)]"
+                >
+                  {webhookUrl}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyWebhook}
+                  className="min-h-[40px] px-3.5 rounded-xl bg-[var(--accent-primary)] text-[var(--text-on-accent)] text-xs font-extrabold flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-[0.97]"
+                >
+                  {copiedWebhook ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedWebhook ? t('billCopiedBtn') : t('billCopyLinkBtn')}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Option 2: Import Last 30 Days File (.xml / .json / .txt) */}
+            <div className="p-3.5 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-[var(--text-primary)]">
+                <FileUp className="w-4 h-4 text-[var(--accent-primary)] shrink-0" />
+                <span>{t('smsOnboardingStep2Title')}</span>
+              </div>
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                {t('smsOnboardingStep2Desc')}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  dismissWizardAndRemember();
+                  fileInputRef.current?.click();
+                }}
+                className="w-full min-h-[42px] px-4 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-strong)] text-xs font-extrabold text-[var(--accent-primary)] flex items-center justify-center gap-2 cursor-pointer active:scale-[0.97]"
+              >
+                <FileUp className="w-4 h-4" />
+                <span>{t('smsImportFileBtn')}</span>
+              </button>
+            </div>
+
+            {/* Option 3: 1-Tap Clipboard Permission Read or Manual Paste */}
+            <div className="p-3.5 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-[var(--text-primary)]">
+                <ClipboardPaste className="w-4 h-4 text-[var(--accent-primary)] shrink-0" />
+                <span>{t('smsOnboardingStep3Title')}</span>
+              </div>
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                {t('smsOnboardingStep3Desc')}
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleQuickClipboardPermissionPaste}
+                  className="min-h-[42px] px-3 rounded-xl bg-[var(--accent-primary)] text-[var(--text-on-accent)] text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.97]"
+                >
+                  <ClipboardPaste className="w-4 h-4" />
+                  <span>{t('smsAllowClipboardBtn')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismissWizardAndRemember();
+                    setShowAddMessagesSheet(true);
+                  }}
+                  className="min-h-[42px] px-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] text-xs font-bold text-[var(--text-primary)] cursor-pointer active:scale-[0.97]"
+                >
+                  {t('smsAddOrImportBtn')}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={dismissWizardAndRemember}
+              className="w-full min-h-[42px] rounded-xl bg-[var(--bg-tertiary)] text-xs font-bold text-[var(--text-secondary)] cursor-pointer active:scale-[0.97]"
+            >
+              {t('smsOnboardingDoneBtn')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

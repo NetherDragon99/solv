@@ -469,7 +469,7 @@ test('9. translations.en & translations.ar have 100% key parity and all release 
     [/\b[\w-]+\/[\w-]+\//, 'path'],
   ];
 
-  for (const ver of ['2.2.8', '2.2.7', '2.2.6', '2.2.5', '2.2.4', '2.2.3', '2.2.2', '2.2.1', '2.2.0']) {
+  for (const ver of ['2.2.9', '2.2.8', '2.2.7', '2.2.6', '2.2.5', '2.2.4', '2.2.3', '2.2.2', '2.2.1', '2.2.0']) {
     const note = APP_RELEASE_NOTES.find((n) => n.version === ver);
     assert.ok(note, `Release note ${ver} exists`);
     const texts = [note.title.en, note.title.ar, ...note.highlights.en, ...note.highlights.ar];

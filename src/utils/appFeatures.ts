@@ -19,6 +19,25 @@ export function getReleaseNotesForChannel(
 
 export const APP_RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: '2.2.9',
+    isBeta: true,
+    releaseDate: 'November 28, 2026',
+    title: {
+      en: 'Beta v2.2.9: Rock-Solid Number Pad Scrolling & Guided Device Messages Setup',
+      ar: 'بيتا v2.2.9: ثبات تام لكيبورد الأرقام مع السكرول ونافذة إعداد ترحيبية لرسائل الجهاز',
+    },
+    highlights: {
+      en: [
+        'Zero-Bounce Number Pad on Scroll + Quick Toggle Pill: Scrolling inside Add Transaction now glides smoothly without rapid bounce, paired with a quick Show/Hide Keypad handle right above Categories.',
+        'First-Time Device Messages Setup & One-Tap Clipboard Permission: Opening Device Messages guides you step by step to connect automatic SMS forwarding, import your last 30 days of messages, or paste copied bank messages with browser clipboard permission.',
+      ],
+      ar: [
+        'ثبات تام لكيبورد الأرقام أثناء السكرول مع زر إظهار/إخفاء سريع: اختفاء وظهور لوحة الأرقام أصبح مرتبطاً بحركة السحب الحقيقية بدون أي اهتزاز أو ارتداد، مع زر سهم علوي للتحكم بضغطة واحدة.',
+        'نافذة إعداد ترحيبية لرسائل الجهاز ولصق فوري بصلاحية الحافظة: عند فتح رسائل الجهاز لأول مرة تظهر خطوات واضحة لربط الاستقبال التلقائي أو استيراد رسائل آخر 30 يوم أو لصق الرسائل المنسوخة بصلاحية المتصفح.',
+      ],
+    },
+  },
+  {
     version: '2.2.8',
     isBeta: true,
     releaseDate: 'November 28, 2026',

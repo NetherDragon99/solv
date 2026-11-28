@@ -223,14 +223,30 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [transferFeeBudgetPool, setTransferFeeBudgetPool] = useState<ExpenseBudgetPool>('daily');
   const [activeKeypadTarget, setActiveKeypadTarget] = useState<'amount' | 'fee'>('amount');
   const [isKeypadCollapsedOnScroll, setIsKeypadCollapsedOnScroll] = useState<boolean>(false);
-  const lastUpperScrollTopRef = useRef<number>(0);
+  const keypadCollapsedRef = useRef<boolean>(false);
+  const keypadLockUntilRef = useRef<number>(0);
+  const wheelAccRef = useRef<number>(0);
+  const scrollTouchGestureRef = useRef<{ startX: number; anchorY: number } | null>(null);
   const [priceUpdateMode, setPriceUpdateMode] = useState<'update' | 'special'>('update');
+
+  const setKeypadCollapsedSafe = useCallback((next: boolean, immediate = false) => {
+    if (!immediate) {
+      if (next === keypadCollapsedRef.current) return;
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (now < keypadLockUntilRef.current) return;
+      keypadLockUntilRef.current = now + 320;
+    } else {
+      keypadLockUntilRef.current = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 200;
+    }
+    keypadCollapsedRef.current = next;
+    setIsKeypadCollapsedOnScroll(next);
+  }, []);
 
   useEffect(() => {
     if (activeKeypadTarget === 'fee') {
-      setIsKeypadCollapsedOnScroll(false);
+      setKeypadCollapsedSafe(false, true);
     }
-  }, [activeKeypadTarget]);
+  }, [activeKeypadTarget, setKeypadCollapsedSafe]);
   const [showDateTimePicker, setShowDateTimePicker] = useState<boolean>(false);
   const [pickerTab, setPickerTab] = useState<'date' | 'time'>('date');
   const [accountDropdownOpen, setAccountDropdownOpen] = useState<'single' | 'from' | 'to' | null>(null);
@@ -486,8 +502,11 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
     prevEditingTxIdRef.current = currentTxId;
     setShowWithdrawalPrompt(false);
     setActiveKeypadTarget('amount');
+    keypadCollapsedRef.current = false;
+    keypadLockUntilRef.current = 0;
+    wheelAccRef.current = 0;
+    scrollTouchGestureRef.current = null;
     setIsKeypadCollapsedOnScroll(false);
-    lastUpperScrollTopRef.current = 0;
     setPriceUpdateMode('update');
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -1837,22 +1856,59 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
           <div className="w-9" /> {/* Spacer */}
         </div>
 
-        {/* Scrollable Upper Section with Virtual Keyboard Inset Padding (Numpad Collapses Smoothly on Scroll Down) */}
+        {/* Scrollable Upper Section — Gesture-driven Keypad Collapse (Zero Oscillation / Zero Scroll Clamping) */}
         <div
-          onScroll={(e) => {
-            const cur = e.currentTarget.scrollTop;
-            const prev = lastUpperScrollTopRef.current;
-            if (cur > prev + 10 && cur > 24) {
-              setIsKeypadCollapsedOnScroll(true);
-            } else if (cur < prev - 10 || cur <= 8) {
-              setIsKeypadCollapsedOnScroll(false);
+          onWheel={(e) => {
+            if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+            const el = e.currentTarget;
+            if (wheelAccRef.current * e.deltaY < 0) {
+              wheelAccRef.current = 0;
             }
-            lastUpperScrollTopRef.current = cur;
+            wheelAccRef.current += e.deltaY;
+            if (wheelAccRef.current >= 44 && (el.scrollTop > 4 || el.scrollHeight > el.clientHeight + 16)) {
+              wheelAccRef.current = 0;
+              setKeypadCollapsedSafe(true);
+            } else if (wheelAccRef.current <= -44) {
+              wheelAccRef.current = 0;
+              setKeypadCollapsedSafe(false);
+            }
+          }}
+          onTouchStart={(e) => {
+            if (e.touches.length !== 1) return;
+            scrollTouchGestureRef.current = {
+              startX: e.touches[0].clientX,
+              anchorY: e.touches[0].clientY,
+            };
+          }}
+          onTouchMove={(e) => {
+            const g = scrollTouchGestureRef.current;
+            if (!g || e.touches.length !== 1) return;
+            const curX = e.touches[0].clientX;
+            const curY = e.touches[0].clientY;
+            const dx = curX - g.startX;
+            const dy = g.anchorY - curY; // dy > 0 = finger moving UP (scrolling down)
+            if (Math.abs(dx) > Math.abs(dy) * 1.1) return;
+            const el = e.currentTarget;
+            if (dy >= 38 && (el.scrollTop > 2 || el.scrollHeight > el.clientHeight + 12)) {
+              g.anchorY = curY;
+              setKeypadCollapsedSafe(true);
+            } else if (dy <= -38) {
+              g.anchorY = curY;
+              setKeypadCollapsedSafe(false);
+            }
+          }}
+          onTouchEnd={() => {
+            scrollTouchGestureRef.current = null;
+          }}
+          onTouchCancel={() => {
+            scrollTouchGestureRef.current = null;
           }}
           style={{
             transform: isDragging && !prefersReducedMotion ? `translateX(${dragDeltaX * 0.15}px)` : 'none',
             transition: isDragging || prefersReducedMotion ? 'none' : 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1)',
-            paddingBottom: 'calc(1rem + var(--kb-inset, 0px))',
+            paddingBottom: isKeypadCollapsedOnScroll
+              ? 'calc(13rem + var(--kb-inset, 0px))'
+              : 'calc(1rem + var(--kb-inset, 0px))',
           }}
           className="flex-1 overflow-y-auto overscroll-contain touch-pan-y px-5 py-3 space-y-3.5 kb-scroll-pad"
         >
@@ -1906,7 +1962,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                 }}
                 onClick={() => {
                   setActiveKeypadTarget('amount');
-                  setIsKeypadCollapsedOnScroll(false);
+                  setKeypadCollapsedSafe(false, true);
                 }}
                 className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-2xl bg-zinc-900/60 border shadow-inner select-none transition cursor-pointer ${
                   activeKeypadTarget === 'amount'
@@ -3554,11 +3610,32 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
           )}
         </div>
 
-        {/* Fixed Bottom Dock Container (Category Bar Pinned Above Keypad, with safe-area & visualViewport) */}
+        {/* Fixed Bottom Dock Container (Category Bar Pinned Above Keypad, with Quick Toggle Handle) */}
         <div
           data-keypad="true"
-          className="border-t border-zinc-800/80 bg-zinc-950 px-5 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] shrink-0 z-10 shadow-[0_-8px_20px_rgba(0,0,0,0.5)]"
+          className="border-t border-zinc-800/80 bg-zinc-950 px-5 pt-1.5 pb-[max(1rem,env(safe-area-inset-bottom))] shrink-0 z-10 shadow-[0_-8px_20px_rgba(0,0,0,0.5)]"
         >
+          {/* Quick 1-Tap Keypad Collapse / Expand Pill Handle */}
+          <div className="flex justify-center pb-1">
+            <button
+              type="button"
+              onClick={() => setKeypadCollapsedSafe(!isKeypadCollapsedOnScroll, true)}
+              aria-label={isKeypadCollapsedOnScroll ? t('txShowKeypadBtn') : t('txHideKeypadBtn')}
+              className="min-h-[28px] px-3 py-0.5 rounded-full bg-[var(--bg-tertiary)]/70 hover:bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-[11px] font-bold text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1 transition cursor-pointer active:scale-[0.97]"
+            >
+              {isKeypadCollapsedOnScroll ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                  <span>{t('txShowKeypadBtn')}</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  <span>{t('txHideKeypadBtn')}</span>
+                </>
+              )}
+            </button>
+          </div>
           {/* Sticky Category Selector Row (Pinned Directly Above Keypad, Hidden for Transfer) */}
           {type !== 'transfer' && (
             <div className="pb-2">
@@ -3626,24 +3703,16 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             </div>
           )}
 
-          {/* Keypad (collapses smoothly downward when scrolling down, leaving Category bar + Save button visible) */}
-          <div
-            className="grid transition-[grid-template-rows,opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]"
-            style={{
-              gridTemplateRows: isKeypadCollapsedOnScroll ? '0fr' : '1fr',
-              opacity: isKeypadCollapsedOnScroll ? 0 : 1,
-              transform: isKeypadCollapsedOnScroll ? 'translate3d(0, 16px, 0)' : 'translate3d(0, 0, 0)',
-              pointerEvents: isKeypadCollapsedOnScroll ? 'none' : 'auto',
-            }}
-          >
-            <div className="overflow-hidden">
+          {/* Keypad (GPU transform/opacity reveal, zero layout oscillation on scroll) */}
+          {!isKeypadCollapsedOnScroll && (
+            <div className="animate-in fade-in slide-in-from-bottom-2 duration-150">
               <Numpad
                 value={activeKeypadTarget === 'fee' ? manualFeeStr : amountStr}
                 onChange={activeKeypadTarget === 'fee' ? setManualFeeStr : setAmountStr}
                 lang={settings.language}
               />
             </div>
-          </div>
+          )}
 
           {/* Validation warning hint when active recurring filter has 0 days/times selected */}
           {isRecurring && isAdvancedSchedule && isFilterEmpty && (
