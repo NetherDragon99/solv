@@ -301,7 +301,11 @@ export const TransactionDetailsModal: React.FC = () => {
                   </span>
                 </div>
                 <span className="text-xs font-mono font-bold text-red-400">
-                  -{formatCurrency(transferBalances.amount, currencySymbol, settings.language)}
+                  -{formatCurrency(
+                    transferBalances.amount + (viewingTx.transferFee && viewingTx.transferFee > 0 ? viewingTx.transferFee : 0),
+                    currencySymbol,
+                    settings.language
+                  )}
                 </span>
               </div>
 

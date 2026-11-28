@@ -33,6 +33,27 @@
       ".read": "auth != null",
       ".write": "auth != null"
     },
+    "product_catalog": {
+      ".read": "auth != null",
+      "$codeKey": {
+        ".write": "auth != null"
+      }
+    },
+    "temp_code_redirects": {
+      ".read": "auth != null",
+      "$tempKey": {
+        ".write": "auth != null"
+      }
+    },
+    "sms_inbox": {
+      ".read": false,
+      "$inboxToken": {
+        ".read": "auth != null && $inboxToken.length >= 24",
+        "$msgId": {
+          ".write": "$inboxToken.length >= 24 && ((!data.exists() && newData.child('body').isString() && newData.child('body').val().length > 0 && newData.child('body').val().length <= 2500) || (auth != null && !newData.exists()))"
+        }
+      }
+    },
     "bill_splits": {
       ".read": false,
       "$billId": {

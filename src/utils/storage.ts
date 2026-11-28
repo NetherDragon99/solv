@@ -2,7 +2,8 @@ import { parseFormattedNumber } from './formatters';
 import { Account, Category, Transaction, AppSettings, AppData, RecurringTransaction, BillSplitStorageBundle } from '../types';
 import { DEFAULT_ACCOUNTS, INITIAL_CATEGORIES, DEFAULT_SETTINGS } from './constants';
 import { isStrictSeededDailyExpressCategory, CORRECTED_SEEDED_EXPENSE_CATEGORY_NAME } from './categoryMigration';
-import { syncAllAccountBalances } from './balanceEngine';
+import { syncAllAccountBalances, getHistoricalBalance } from './balanceEngine';
+import { migrateLegacySeparateTransferFees } from './transferFee';
 import { saveItemToIndexedDB, saveFullDataToIndexedDB } from './indexedDB';
 import { debouncedPersist } from './persistQueue';
 import { loadRecurringTransactions, migrateRecurringRule } from './recurring';
@@ -63,6 +64,12 @@ export function loadInitialData(): AppData {
         }
       }
     } catch {}
+
+    // Merge any legacy standalone transfer-fee transactions into their parent transfer
+    const feeMigration = migrateLegacySeparateTransferFees(transactions, accounts, getHistoricalBalance);
+    if (feeMigration.changed) {
+      transactions = feeMigration.transactions;
+    }
 
     // Always ensure balances accurately match transaction history
     accounts = syncAllAccountBalances(accounts, transactions);

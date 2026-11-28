@@ -886,6 +886,11 @@ export function evaluateSmartBudget(
         : defaultAccounts;
 
     const linkedAccountSet = new Set(effectiveLinkedAccounts.map((a) => a.id));
+    const legacyFeeParentIds = new Set(
+      transactions
+        .filter((t) => Boolean(t?.feeOfTransferId))
+        .map((t) => t.feeOfTransferId as string)
+    );
     let todayOutflowMinor = 0;
     let todayInflowMinor = 0;
     let fromTodayExtraIncomeMinor = 0;
@@ -910,6 +915,12 @@ export function evaluateSmartBudget(
         const fromIsLinked = linkedAccountSet.has(tx.accountId);
         const toIsLinked = linkedAccountSet.has(tx.toAccountId);
         const principalMinor = Math.max(0, toMinorUnits(tx.amount || 0, minorFactor));
+        const embeddedFeeMinor = !legacyFeeParentIds.has(tx.id)
+          ? Math.max(0, toMinorUnits(tx.transferFee || 0, minorFactor))
+          : 0;
+        if (fromIsLinked && embeddedFeeMinor > 0) {
+          trackedBudgetOutflowsFromLinkedMinor += embeddedFeeMinor;
+        }
         if (
           fromIsLinked &&
           !toIsLinked &&
@@ -1002,6 +1013,38 @@ export function evaluateSmartBudget(
   let netPrivateTransferDeltaMinor = 0;
 
   const adjustmentsMap = effectiveConfig.adjustments || config.adjustments || {};
+  const legacyCycleFeeParentIds = new Set(
+    transactions
+      .filter((t) => Boolean(t?.feeOfTransferId))
+      .map((t) => t.feeOfTransferId as string)
+  );
+
+  const pushEmbeddedTransferFeeIfNeeded = (tx: Transaction, cleanTxDate: string, acc?: Account) => {
+    if (
+      !(tx.type === 'transfer' || Boolean(tx.toAccountId)) ||
+      !tx.transferFee ||
+      tx.transferFee <= 0 ||
+      legacyCycleFeeParentIds.has(tx.id)
+    ) {
+      return;
+    }
+    if (calculationMode === 'from_today' && cleanTxDate < fromDateStr) return;
+    if (acc && !isIncludedBudgetAccount(acc)) return;
+    cycleTxs.push({
+      id: `${tx.id}__embedded_fee`,
+      type: 'expense',
+      amount: tx.transferFee,
+      date: cleanTxDate,
+      time: tx.time,
+      accountId: tx.accountId,
+      categoryId: 'cat_bank_transfer_fees',
+      categoryName: 'Bank Fees / Transfer Commissions',
+      categoryIcon: '🏦',
+      budgetPool: normalizeExpenseBudgetPool(tx.transferFeeBudgetPool || 'daily', tx.isFromRecurring),
+      description: tx.description || 'Transfer Fee',
+      createdAt: tx.createdAt,
+    });
+  };
 
   for (const tx of transactions) {
     if (!tx || !tx.date) continue;
@@ -1041,10 +1084,11 @@ export function evaluateSmartBudget(
         savingsDepositedMinor += principalMinor;
         savingsTransactions.push(tx);
       }
+      pushEmbeddedTransferFeeIfNeeded(tx, cleanTxDate, acc);
       continue;
     }
 
-    // Internal transfers (never counted as expenses)
+    // Internal transfers (principal never counted as expense; embedded transferFee attributed to its chosen pool)
     if (tx.type === 'transfer' || Boolean(tx.toAccountId)) {
       if (!tx.toAccountId || tx.accountId === tx.toAccountId) continue;
 
@@ -1053,6 +1097,8 @@ export function evaluateSmartBudget(
         excludedCurrenciesSet.add(toAcc.currency);
         continue;
       }
+
+      pushEmbeddedTransferFeeIfNeeded(tx, cleanTxDate, acc);
 
       const principalMinor = Math.max(0, toMinorUnits(tx.amount || 0, minorFactor));
       if (principalMinor <= 0) continue;

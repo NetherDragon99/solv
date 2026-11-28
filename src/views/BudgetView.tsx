@@ -390,7 +390,7 @@ const BudgetViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
     );
   }, [transactions, cycleRange]);
 
-  // Spent amount per category in this cycle (including any tax/extra fee)
+  // Spent amount per category in this cycle (including any tax/extra fee and embedded transfer fees)
   const categorySpentMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const tx of cycleExpenseTxs) {
@@ -399,8 +399,20 @@ const BudgetViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
         map.set(tx.categoryId, (map.get(tx.categoryId) || 0) + (tx.amount + tax));
       }
     }
+    for (const tx of transactions) {
+      if (
+        (tx.type === 'transfer' || Boolean(tx.toAccountId)) &&
+        !isManualAdjustment(tx) &&
+        isTransactionInRange(tx, cycleRange)
+      ) {
+        const fee = typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
+        if (fee > 0) {
+          map.set('cat_bank_transfer_fees', (map.get('cat_bank_transfer_fees') || 0) + fee);
+        }
+      }
+    }
     return map;
-  }, [cycleExpenseTxs]);
+  }, [cycleExpenseTxs, transactions, cycleRange]);
 
   // Income received per category in this cycle (including any tax/extra fee)
   const categoryIncomeMap = useMemo(() => {

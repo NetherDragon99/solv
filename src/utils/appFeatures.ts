@@ -19,6 +19,29 @@ export function getReleaseNotesForChannel(
 
 export const APP_RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: '2.2.8',
+    isBeta: true,
+    releaseDate: 'November 28, 2026',
+    title: {
+      en: 'Beta v2.2.8: Smart Camera & Barcode Scanner, Device Messages Inbox, Unified Transfer Fees & Smooth Keypad',
+      ar: 'بيتا v2.2.8: كاميرا ذكية وباركود، رسائل الجهاز التلقائية، دمج ضريبة التحويل، وكيبورد انسيابي',
+    },
+    highlights: {
+      en: [
+        'Unified Transfer Fee in One Transaction: Transfer fees now stay inside the same transfer record and deduct from the sending account only in before/after balances while still counting in expenses and smart budget.',
+        'Smooth Auto-Hiding Keypad & Animated Plus Menu: Scrolling down inside Add Transaction tucks the number pad away leaving categories and Save ready, and tapping + opens an animated quick menu for Add Transaction, Split Bill, and Smart Camera.',
+        'Smart Camera for Any Item, Ticket, Barcode & QR: Snap any product, bus ticket, or device or point at a barcode/QR to fill your transaction automatically, save items permanently for offline reuse, upgrade temporary codes to real barcodes, and choose whether price changes update saved data.',
+        'Device Messages Inbox & Floating Approval Strip: Watch favorite bank or wallet senders over the last 30 days, queue offline messages automatically until internet returns, and swipe through detected transactions in a floating top strip to accept or reject.',
+      ],
+      ar: [
+        'دمج ضريبة التحويل في نفس المعاملة: رسوم التحويل بقت جزء من معاملة التحويل نفسها بدون معاملة منفصلة، وتُخصم من رصيد الحساب المحوّل منه فقط في «قبل وبعد» مع استمرار حسابها في المصاريف والميزانية.',
+        'نزول انسيابي لكيبورد الأرقام وقائمة + المتحركة: عند النزول بالسكرول في شاشة المعاملة تنزل أزرار الأرقام ويبقى شريط التصنيفات وزر الحفظ، وزر + يفتح قائمة متحركة تضم إضافة معاملة وتقسيم الفاتورة وإضافة بالكاميرا.',
+        'كاميرا ذكية للمنتجات والتذاكر والباركود والـ QR: صوّر أي منتج أو تذكرة أتوبيس أو جهاز أو امسح الباركود ليملأ بيانات المعاملة ويحفظها بشكل دائم للعمل بدون إنترنت، مع استبدال الكود المؤقت بالكود الحقيقي ونافذة اختيار تحديث السعر عند الاختلاف.',
+        'صندوق رسائل الجهاز والمنيو العائمة للموافقة السريعة: حدد جهات الرسائل المعتمدة لآخر 30 يوم ليحللها الذكاء الاصطناعي ويعرض المعاملات في شريط عائم أعلى الشاشة للقبول أو الرفض، مع تعليق الرسائل تلقائياً بدون إنترنت لحين عودة الاتصال أو إضافتها يدوياً.',
+      ],
+    },
+  },
+  {
     version: '2.2.7',
     isBeta: true,
     releaseDate: 'November 28, 2026',

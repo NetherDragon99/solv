@@ -15,6 +15,8 @@ import { MiniDateTimePicker } from './MiniDateTimePicker';
 import { CategoryDirectoryModal } from './CategoryDirectoryModal';
 import { getLocalizedCurrencySymbol } from '../utils/currencies';
 import { ShareFolder } from '../utils/shareFolders';
+import { persistCatalogProductDecision } from '../utils/cameraCatalog';
+import { markSmsMessageAccepted } from '../utils/smsInboxStore';
 
 const TYPES: TransactionType[] = ['income', 'expense', 'transfer'];
 
@@ -169,6 +171,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
     defaultTxAccountId,
     defaultTxAmount,
     defaultTxIsRecurring,
+    pendingTxDraft,
     selectedAccountId,
     editingRecurring,
     applyRecurringRuleEdit,
@@ -219,6 +222,15 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [manualFeeStr, setManualFeeStr] = useState<string>('0');
   const [transferFeeBudgetPool, setTransferFeeBudgetPool] = useState<ExpenseBudgetPool>('daily');
   const [activeKeypadTarget, setActiveKeypadTarget] = useState<'amount' | 'fee'>('amount');
+  const [isKeypadCollapsedOnScroll, setIsKeypadCollapsedOnScroll] = useState<boolean>(false);
+  const lastUpperScrollTopRef = useRef<number>(0);
+  const [priceUpdateMode, setPriceUpdateMode] = useState<'update' | 'special'>('update');
+
+  useEffect(() => {
+    if (activeKeypadTarget === 'fee') {
+      setIsKeypadCollapsedOnScroll(false);
+    }
+  }, [activeKeypadTarget]);
   const [showDateTimePicker, setShowDateTimePicker] = useState<boolean>(false);
   const [pickerTab, setPickerTab] = useState<'date' | 'time'>('date');
   const [accountDropdownOpen, setAccountDropdownOpen] = useState<'single' | 'from' | 'to' | null>(null);
@@ -474,6 +486,9 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
     prevEditingTxIdRef.current = currentTxId;
     setShowWithdrawalPrompt(false);
     setActiveKeypadTarget('amount');
+    setIsKeypadCollapsedOnScroll(false);
+    lastUpperScrollTopRef.current = 0;
+    setPriceUpdateMode('update');
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -624,42 +639,74 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         setAdvancedTab('weekdays');
       }
     } else {
-      setType('expense');
-      setAmountStr(defaultTxAmount && defaultTxAmount > 0 && !isSharedMode ? defaultTxAmount.toString() : '0');
+      const draft = !isSharedMode ? pendingTxDraft : null;
+      const initType: TransactionType = draft?.type || 'expense';
+      setType(initType);
+      const initAmt =
+        draft?.amount && draft.amount > 0
+          ? draft.amount.toString()
+          : defaultTxAmount && defaultTxAmount > 0 && !isSharedMode
+          ? defaultTxAmount.toString()
+          : '0';
+      setAmountStr(initAmt);
       const now = new Date();
-      setDate(formatDateToYYYYMMDD(now));
+      setDate(draft?.date || formatDateToYYYYMMDD(now));
       setHasTime(true);
       const nowTime = formatTimeToHHMM(now);
-      setTime(nowTime);
-      setDescription('');
-      setTaxAmountStr('');
+      setTime(draft?.time || nowTime);
+      setDescription(draft?.description || '');
       userManuallyPickedPoolRef.current = false;
       setBudgetPool(!isSharedMode && defaultTxIsRecurring ? 'fixed' : 'daily');
       setIsSalary(false);
-      const defaultAcc = (!isSharedMode && (defaultTxAccountId || selectedAccountId)) || (accounts[0] ? accounts[0].id : '');
+      const defaultAcc =
+        draft?.accountId ||
+        (!isSharedMode && (defaultTxAccountId || selectedAccountId)) ||
+        (accounts[0] ? accounts[0].id : '');
       setAccountId(defaultAcc);
-      const otherAcc = accounts.find((a) => a.id !== defaultAcc);
+      const otherAcc = accounts.find((a) => a.id === draft?.toAccountId) || accounts.find((a) => a.id !== defaultAcc);
       setToAccountId(otherAcc ? otherAcc.id : '');
       setIsSavingsAllocation(
         otherAcc?.accountRole === 'savings' || otherAcc?.accountRole === 'investment'
       );
       setSavingsWithdrawalChoice(undefined);
-      // Every NEW transaction (Income, Expense, Transfer) MUST strictly default to "No Tax / Fee" (0.00)
-      setTransferFeeMode('none');
-      setManualFeeInputType('amount');
-      setManualFeeStr('0');
-      setTaxAmountStr('');
+      if (draft?.taxOrFeeAmount && draft.taxOrFeeAmount > 0) {
+        setTransferFeeMode('manual');
+        setManualFeeInputType('amount');
+        setManualFeeStr(draft.taxOrFeeAmount.toString());
+        setTaxAmountStr(draft.taxOrFeeAmount.toString());
+      } else {
+        // Every NEW transaction (Income, Expense, Transfer) MUST strictly default to "No Tax / Fee" (0.00)
+        setTransferFeeMode('none');
+        setManualFeeInputType('amount');
+        setManualFeeStr('0');
+        setTaxAmountStr('');
+      }
       setTransferFeeBudgetPool('daily');
-      const expCats = categories.filter((c) => c.type === 'expense');
-      let defaultCat = expCats[0];
+      const targetCats = categories.filter((c) => c.type === (initType === 'income' ? 'income' : 'expense'));
+      let defaultCat = targetCats[0];
       if (settings.categoryOrder && settings.categoryOrder.length > 0) {
         const orderMap = new Map(settings.categoryOrder.map((id, index) => [id, index]));
-        const sorted = [...expCats].sort((a, b) => {
+        const sorted = [...targetCats].sort((a, b) => {
           const orderA = orderMap.has(a.id) ? (orderMap.get(a.id) as number) : 9999;
           const orderB = orderMap.has(b.id) ? (orderMap.get(b.id) as number) : 9999;
           return orderA - orderB;
         });
         if (sorted[0]) defaultCat = sorted[0];
+      }
+      if (draft?.categoryId && targetCats.some((c) => c.id === draft.categoryId)) {
+        defaultCat = targetCats.find((c) => c.id === draft.categoryId)!;
+      } else if (draft?.categoryHint) {
+        const hint = draft.categoryHint.toLowerCase();
+        const matched = targetCats.find(
+          (c) =>
+            c.name.toLowerCase().includes(hint) ||
+            hint.includes(c.name.toLowerCase()) ||
+            (hint.includes('food') && (c.name.includes('طعام') || c.name.includes('أكل') || c.name.toLowerCase().includes('food'))) ||
+            (hint.includes('transport') && (c.name.includes('مواصلات') || c.name.toLowerCase().includes('transport'))) ||
+            (hint.includes('shop') && (c.name.includes('تسوق') || c.name.toLowerCase().includes('shop'))) ||
+            (hint.includes('bill') && (c.name.includes('فواتير') || c.name.toLowerCase().includes('bill')))
+        );
+        if (matched) defaultCat = matched;
       }
       setCategoryId(defaultCat ? defaultCat.id : '');
       setIsRecurring(Boolean(!isSharedMode && defaultTxIsRecurring));
@@ -678,7 +725,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       setSelectedDayOverrideToAdd('');
       setAdvancedTab('weekdays');
     }
-  }, [effectiveIsOpen, activeEditingTx?.id, editingRecurring?.id, defaultTxIsRecurring, settings.categoryOrder, isSharedMode, accounts, categories]);
+  }, [effectiveIsOpen, activeEditingTx?.id, editingRecurring?.id, defaultTxIsRecurring, pendingTxDraft, settings.categoryOrder, isSharedMode, accounts, categories]);
 
   // Dynamic auto-expanding height for note textarea (up to ~6 lines / 144px)
   useEffect(() => {
@@ -1514,6 +1561,8 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         type === 'transfer' && transferFeeMode === 'manual' ? manualFeeRawNumeric : undefined,
       transferFeeBudgetPool:
         type === 'transfer' && calculatedTransferFee > 0 ? transferFeeBudgetPool : undefined,
+      scannedProductCode: pendingTxDraft?.productItem?.code || editingTx?.scannedProductCode,
+      sourceSmsId: pendingTxDraft?.smsMessageId || editingTx?.sourceSmsId,
     };
 
     if (editingRecurring) {
@@ -1562,7 +1611,30 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         ...payload,
       });
     } else {
-      addTransaction(payload);
+      const createdTxId = addTransaction(payload);
+      if (!isSharedMode && pendingTxDraft?.productItem && numericAmount > 0) {
+        persistCatalogProductDecision({
+          code: pendingTxDraft.productItem.code,
+          isTemporaryCode: pendingTxDraft.productItem.isTemporaryCode,
+          name:
+            description.trim() ||
+            pendingTxDraft.productItem.name ||
+            pendingTxDraft.productItem.code,
+          price: numericAmount,
+          categoryId: selectedCategory?.id,
+          categoryHint: pendingTxDraft.categoryHint || selectedCategory?.name,
+          visualHash: pendingTxDraft.productItem.visualHash,
+          thumbnailDataUrl: pendingTxDraft.productItem.thumbnailDataUrl,
+          updateSavedPrice:
+            pendingTxDraft.productItem.isNewItem ||
+            !pendingTxDraft.productItem.savedPrice ||
+            priceUpdateMode === 'update',
+          aiVerifiedPrintedPrice: pendingTxDraft.productItem.aiVerifiedPrintedPrice,
+        }).catch(() => {});
+      }
+      if (!isSharedMode && pendingTxDraft?.smsMessageId) {
+        markSmsMessageAccepted(pendingTxDraft.smsMessageId, createdTxId);
+      }
       if (isRecurring) {
         const advConfig = buildAdvConfig();
 
@@ -1765,8 +1837,18 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
           <div className="w-9" /> {/* Spacer */}
         </div>
 
-        {/* Scrollable Upper Section with Virtual Keyboard Inset Padding (Numpad Dock Stays Fixed Below) */}
+        {/* Scrollable Upper Section with Virtual Keyboard Inset Padding (Numpad Collapses Smoothly on Scroll Down) */}
         <div
+          onScroll={(e) => {
+            const cur = e.currentTarget.scrollTop;
+            const prev = lastUpperScrollTopRef.current;
+            if (cur > prev + 10 && cur > 24) {
+              setIsKeypadCollapsedOnScroll(true);
+            } else if (cur < prev - 10 || cur <= 8) {
+              setIsKeypadCollapsedOnScroll(false);
+            }
+            lastUpperScrollTopRef.current = cur;
+          }}
           style={{
             transform: isDragging && !prefersReducedMotion ? `translateX(${dragDeltaX * 0.15}px)` : 'none',
             transition: isDragging || prefersReducedMotion ? 'none' : 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1)',
@@ -1822,7 +1904,10 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                     document.activeElement.blur();
                   }
                 }}
-                onClick={() => setActiveKeypadTarget('amount')}
+                onClick={() => {
+                  setActiveKeypadTarget('amount');
+                  setIsKeypadCollapsedOnScroll(false);
+                }}
                 className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-2xl bg-zinc-900/60 border shadow-inner select-none transition cursor-pointer ${
                   activeKeypadTarget === 'amount'
                     ? 'border-emerald-500/60 ring-2 ring-emerald-500/20'
@@ -1842,6 +1927,60 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                 <span className="mt-1 text-[10px] font-semibold text-amber-400 animate-pulse">
                   {t('editingFeeKeypadHint')}
                 </span>
+              )}
+
+              {/* Scanned Product Code Badge + Inline Price-Difference Prompt Directly Below Price */}
+              {!isSharedMode && pendingTxDraft?.productItem && (
+                <div className="mt-2 w-full max-w-md mx-auto space-y-2">
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-[11px] font-mono text-[var(--text-secondary)]">
+                    <span>{t('txScannedCodeBadge')}</span>
+                    <span dir="ltr" className="font-bold text-[var(--accent-primary)]">
+                      {pendingTxDraft.productItem.code}
+                    </span>
+                  </div>
+
+                  {pendingTxDraft.productItem.savedPrice !== undefined &&
+                    pendingTxDraft.productItem.savedPrice > 0 &&
+                    numericAmount > 0 &&
+                    Math.abs(numericAmount - pendingTxDraft.productItem.savedPrice) >= 0.01 && (
+                      <div className="p-3 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--status-warning)] text-start space-y-2 shadow-lg">
+                        <div className="text-xs font-bold text-[var(--status-warning)]">
+                          {t('txPriceDiffPromptTitle').replace(
+                            '{oldPrice}',
+                            formatCurrency(
+                              pendingTxDraft.productItem.savedPrice,
+                              currencySymbol,
+                              settings.language
+                            )
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPriceUpdateMode('update')}
+                            className={`min-h-[38px] px-2.5 rounded-xl border text-xs font-extrabold cursor-pointer active:scale-[0.97] transition ${
+                              priceUpdateMode === 'update'
+                                ? 'bg-[var(--accent-primary)] border-[var(--accent-primary)] text-[var(--text-on-accent)]'
+                                : 'bg-[var(--bg-tertiary)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            {t('txPriceDiffUpdateBtn')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPriceUpdateMode('special')}
+                            className={`min-h-[38px] px-2.5 rounded-xl border text-xs font-extrabold cursor-pointer active:scale-[0.97] transition ${
+                              priceUpdateMode === 'special'
+                                ? 'bg-[var(--status-warning)] border-[var(--status-warning)] text-black'
+                                : 'bg-[var(--bg-tertiary)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            {t('txPriceDiffSpecialBtn')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                </div>
               )}
             </div>
 
@@ -3487,12 +3626,24 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             </div>
           )}
 
-          {/* Keypad */}
-          <Numpad
-            value={activeKeypadTarget === 'fee' ? manualFeeStr : amountStr}
-            onChange={activeKeypadTarget === 'fee' ? setManualFeeStr : setAmountStr}
-            lang={settings.language}
-          />
+          {/* Keypad (collapses smoothly downward when scrolling down, leaving Category bar + Save button visible) */}
+          <div
+            className="grid transition-[grid-template-rows,opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            style={{
+              gridTemplateRows: isKeypadCollapsedOnScroll ? '0fr' : '1fr',
+              opacity: isKeypadCollapsedOnScroll ? 0 : 1,
+              transform: isKeypadCollapsedOnScroll ? 'translate3d(0, 16px, 0)' : 'translate3d(0, 0, 0)',
+              pointerEvents: isKeypadCollapsedOnScroll ? 'none' : 'auto',
+            }}
+          >
+            <div className="overflow-hidden">
+              <Numpad
+                value={activeKeypadTarget === 'fee' ? manualFeeStr : amountStr}
+                onChange={activeKeypadTarget === 'fee' ? setManualFeeStr : setAmountStr}
+                lang={settings.language}
+              />
+            </div>
+          </div>
 
           {/* Validation warning hint when active recurring filter has 0 days/times selected */}
           {isRecurring && isAdvancedSchedule && isFilterEmpty && (

@@ -57,6 +57,11 @@ const InsightsViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
     let inc = 0;
     let exp = 0;
     for (const tx of cycleTransactions) {
+      if (tx.type === 'transfer' || Boolean(tx.toAccountId)) {
+        const fee = typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
+        if (fee > 0) exp += fee;
+        continue;
+      }
       const tax = typeof tx.taxAmount === 'number' && !isNaN(tx.taxAmount) ? Math.max(0, tx.taxAmount) : 0;
       const effectiveTotal = tx.amount + tax;
       if (tx.type === 'income') inc += effectiveTotal;
@@ -86,6 +91,28 @@ const InsightsViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
     let totalAmount = 0;
 
     for (const tx of cycleTransactions) {
+      if (targetType === 'expense' && (tx.type === 'transfer' || Boolean(tx.toAccountId)) && !isManualAdjustment(tx)) {
+        const fee = typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
+        if (fee > 0) {
+          totalAmount += fee;
+          const key = 'cat_bank_transfer_fees';
+          const bankFeeLabel =
+            settings.language === 'ar'
+              ? 'مصاريف بنكية وعمولات تحويل'
+              : 'Bank Fees / Transfer Commissions';
+          const existing = map.get(key) || {
+            id: key,
+            name: bankFeeLabel,
+            icon: '🏦',
+            amount: 0,
+            count: 0,
+          };
+          existing.amount += fee;
+          existing.count += 1;
+          map.set(key, existing);
+        }
+        continue;
+      }
       if (tx.type === targetType && !isManualAdjustment(tx)) {
         const tax = typeof tx.taxAmount === 'number' && !isNaN(tx.taxAmount) ? Math.max(0, tx.taxAmount) : 0;
         const effectiveTotal = tx.amount + tax;
@@ -185,6 +212,10 @@ const InsightsViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
       const effectiveTotal = tx.amount + tax;
       if (tx.type === 'income') periods[pIdx].income += effectiveTotal;
       if (tx.type === 'expense') periods[pIdx].expense += effectiveTotal;
+      if (tx.type === 'transfer' || Boolean(tx.toAccountId)) {
+        const fee = typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
+        if (fee > 0) periods[pIdx].expense += fee;
+      }
     }
 
     const maxVal = Math.max(

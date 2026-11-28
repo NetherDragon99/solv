@@ -25,7 +25,24 @@ import { DEFAULT_SETTINGS } from '../src/utils/constants';
 import { buildBillShareText, buildPerPersonShareMessages } from '../src/utils/billSplitShare';
 import { translations } from '../src/utils/translations';
 import { APP_RELEASE_NOTES } from '../src/utils/appFeatures';
-import type { BillExtra, BillItem, BillPerson, BillSession } from '../src/types';
+import {
+  getHistoricalBalance,
+  getTransactionDeltaForAccount,
+  getTransferHistoricalBalances,
+  syncAllAccountBalances,
+} from '../src/utils/balanceEngine';
+import { migrateLegacySeparateTransferFees } from '../src/utils/transferFee';
+import {
+  allocateNextTemporaryCode,
+  computeVisualHashDistance,
+  findLocalProductByCode,
+} from '../src/utils/cameraCatalog';
+import {
+  isMessageMatchingWatchedRules,
+  parseImportedSmsContent,
+  parseSmsLocallyHeuristic,
+} from '../src/utils/smsInboxStore';
+import type { Account, BillExtra, BillItem, BillPerson, BillSession, Transaction } from '../src/types';
 
 let passed = 0;
 function test(name: string, fn: () => void) {
@@ -452,7 +469,7 @@ test('9. translations.en & translations.ar have 100% key parity and all release 
     [/\b[\w-]+\/[\w-]+\//, 'path'],
   ];
 
-  for (const ver of ['2.2.7', '2.2.6', '2.2.5', '2.2.4', '2.2.3', '2.2.2', '2.2.1', '2.2.0']) {
+  for (const ver of ['2.2.8', '2.2.7', '2.2.6', '2.2.5', '2.2.4', '2.2.3', '2.2.2', '2.2.1', '2.2.0']) {
     const note = APP_RELEASE_NOTES.find((n) => n.version === ver);
     assert.ok(note, `Release note ${ver} exists`);
     const texts = [note.title.en, note.title.ar, ...note.highlights.en, ...note.highlights.ar];
@@ -678,6 +695,126 @@ test('14. isRealAuthenticatedUser rejects anonymous/empty sessions and DEFAULT_S
     true
   );
   assert.equal(DEFAULT_SETTINGS.smartBudget?.baseline?.isPaused, true);
+});
+
+// 15. Unified Transfer Fee inside single transfer transaction & legacy tx_fee_* auto-merge
+test('15. Unified transfer fee deducts (amount + fee) from source account ONLY and merges legacy tx_fee_* rows', () => {
+  const accounts: Account[] = [
+    { id: 'acc_cib', name: 'CIB', icon: '🏦', balance: 0, isPrivate: false, customMonthStartDay: 'default', notes: '' },
+    { id: 'acc_wallet', name: 'Wallet', icon: '📱', balance: 0, isPrivate: false, customMonthStartDay: 'default', notes: '' },
+  ];
+  const seedIncome: Transaction = {
+    id: 'tx_seed',
+    type: 'income',
+    amount: 5000,
+    date: '2026-11-01',
+    time: '09:00',
+    accountId: 'acc_cib',
+    description: 'Opening',
+    createdAt: 1000,
+  };
+  const legacyTransfer: Transaction = {
+    id: 'tx_tr_1',
+    type: 'transfer',
+    amount: 1000,
+    transferFee: 5,
+    linkedFeeTxId: 'tx_fee_tx_tr_1',
+    date: '2026-11-02',
+    time: '10:00',
+    accountId: 'acc_cib',
+    toAccountId: 'acc_wallet',
+    description: 'InstaPay',
+    createdAt: 2000,
+  };
+  const legacyFeeChild: Transaction = {
+    id: 'tx_fee_tx_tr_1',
+    type: 'expense',
+    amount: 5,
+    feeOfTransferId: 'tx_tr_1',
+    date: '2026-11-02',
+    time: '10:00',
+    accountId: 'acc_cib',
+    description: 'InstaPay Fee',
+    createdAt: 2001,
+  };
+
+  const migrated = migrateLegacySeparateTransferFees(
+    [seedIncome, legacyTransfer, legacyFeeChild],
+    accounts,
+    getHistoricalBalance
+  );
+  assert.equal(migrated.changed, true);
+  assert.equal(migrated.transactions.length, 2, 'Separate fee row removed');
+  assert.equal(migrated.removedFeeTxs.length, 1);
+
+  const unifiedTr = migrated.transactions.find((t) => t.id === 'tx_tr_1')!;
+  assert.equal(unifiedTr.transferFee, 5);
+  assert.equal(unifiedTr.linkedFeeTxId, undefined);
+  assert.equal(getTransactionDeltaForAccount(unifiedTr, 'acc_cib'), -1005);
+  assert.equal(getTransactionDeltaForAccount(unifiedTr, 'acc_wallet'), 1000);
+
+  const synced = syncAllAccountBalances(accounts, migrated.transactions);
+  assert.equal(synced.find((a) => a.id === 'acc_cib')!.balance, 3995);
+  assert.equal(synced.find((a) => a.id === 'acc_wallet')!.balance, 1000);
+
+  const hist = getTransferHistoricalBalances(unifiedTr, synced, migrated.transactions)!;
+  assert.equal(hist.fromBalanceBefore, 5000);
+  assert.equal(hist.fromBalanceAfter, 3995);
+  assert.equal(hist.toBalanceBefore, 0);
+  assert.equal(hist.toBalanceAfter, 1000);
+});
+
+// 16. Camera Catalog temporary code allocation & perceptual visual hash distance
+test('16. Camera catalog allocates unique TMP-XXXXXX codes and computes 64-bit dHash Hamming distance accurately', () => {
+  const code1 = allocateNextTemporaryCode();
+  const code2 = allocateNextTemporaryCode();
+  assert.match(code1, /^TMP-\d{6}$/);
+  assert.match(code2, /^TMP-\d{6}$/);
+  assert.notEqual(code1, code2);
+  assert.equal(findLocalProductByCode('NON_EXISTENT_999'), null);
+  assert.equal(computeVisualHashDistance('0000000000000000', '0000000000000000'), 0);
+  assert.equal(computeVisualHashDistance('0000000000000000', '000000000000000f'), 4);
+});
+
+// 17. SMS Inbox Engine: OTP/Promo filtering, bank/InstaPay extraction & XML/JSON import
+test('17. SMS Inbox filters OTPs/promos, extracts Arabic/English financial amounts & fees, and imports XML/JSON', () => {
+  const otpRes = parseSmsLocallyHeuristic('CIB', 'Your OTP verification code is 492811. Do not share it.');
+  assert.equal(otpRes.isFinancialTransaction, false);
+  assert.equal(otpRes.ignoreReason, 'otp');
+
+  const arOtpRes = parseSmsLocallyHeuristic('BM', 'كود التحقق الخاص بك هو 883920 صالح لمدة 5 دقائق');
+  assert.equal(arOtpRes.isFinancialTransaction, false);
+  assert.equal(arOtpRes.ignoreReason, 'otp');
+
+  const expRes = parseSmsLocallyHeuristic(
+    'CIB',
+    'تم خصم مبلغ 450.50 ج.م من بطاقتك لدى Carrefour برسوم 2.50 ج.م'
+  );
+  assert.equal(expRes.isFinancialTransaction, true);
+  assert.equal(expRes.type, 'expense');
+  assert.equal(expRes.amount, 450.5);
+  assert.equal(expRes.feeOrTax, 2.5);
+
+  const incRes = parseSmsLocallyHeuristic(
+    'InstaPay',
+    'You have received EGP 1,250.00 via InstaPay from Ahmed.'
+  );
+  assert.equal(incRes.isFinancialTransaction, true);
+  assert.equal(incRes.type, 'income');
+  assert.equal(incRes.amount, 1250);
+
+  const xmlImported = parseImportedSmsContent(
+    '<smses><sms address="CIB" body="Paid EGP 300 at Uber" date="1732000000000" /></smses>'
+  );
+  assert.equal(xmlImported.length, 1);
+  assert.equal(xmlImported[0].sender, 'CIB');
+  assert.equal(
+    isMessageMatchingWatchedRules(
+      { sender: 'CIB-Egypt', domain: 'cibeg.com', body: 'Paid 300' },
+      [{ id: 'r1', pattern: 'CIB', kind: 'sender', createdAt: 1 }]
+    ),
+    true
+  );
 });
 
 console.log(`\n[solv] ALL ${passed} BILL SPLIT VERIFICATION SUITES PASSED ✓\n`);

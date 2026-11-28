@@ -258,7 +258,7 @@ export function analyzeTransactionImpact(
           type: editingTx.type,
           amount: editingTx.amount,
           taxAmount: editingTx.taxAmount,
-          transferFee: 0, // Linked fee tx is reversed below to avoid double subtraction
+          transferFee: removedLinkedFeeTxs.length > 0 ? 0 : editingTx.transferFee,
           date: editingTx.date,
           accountId: editingTx.accountId,
           toAccountId: editingTx.toAccountId,

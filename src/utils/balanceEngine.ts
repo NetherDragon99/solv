@@ -16,17 +16,24 @@ export function compareTransactionsChronological(a: Transaction, b: Transaction)
 }
 
 /**
- * Filter transactions that involve a specific account
+ * Filter transactions that involve a specific account.
+ * Skips legacy separate transfer-fee child rows when their parent transfer is present
+ * because the parent transfer itself deducts (amount + transferFee) from the source account.
  */
 export function getAccountTransactions(accountId: string, transactions: Transaction[]): Transaction[] {
-  return transactions.filter(
-    (tx) => tx.accountId === accountId || (tx.type === 'transfer' && tx.toAccountId === accountId)
-  );
+  const txIdSet = new Set(transactions.map((t) => t.id));
+  return transactions.filter((tx) => {
+    if (tx.feeOfTransferId && txIdSet.has(tx.feeOfTransferId)) {
+      return false;
+    }
+    return tx.accountId === accountId || (tx.type === 'transfer' && tx.toAccountId === accountId);
+  });
 }
 
 /**
  * Computes net delta for an account from a single transaction.
- * For regular expenses and incomes, includes any optional taxAmount in the effective total.
+ * - For regular expenses and incomes, includes any optional taxAmount in the effective total.
+ * - For transfers, deducts (amount + transferFee) ONLY from the source account and adds pure amount to destination.
  */
 export function getTransactionDeltaForAccount(tx: Transaction, accountId: string): number {
   const tax = typeof tx.taxAmount === 'number' && !isNaN(tx.taxAmount) ? Math.max(0, tx.taxAmount) : 0;
@@ -39,11 +46,13 @@ export function getTransactionDeltaForAccount(tx: Transaction, accountId: string
     return tx.accountId === accountId ? -effectiveTotal : 0;
   }
   if (tx.type === 'transfer') {
+    const fee =
+      typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
     if (tx.accountId === accountId) {
-      return -tx.amount; // Money sent out
+      return -(tx.amount + fee); // Money sent out + transfer fee deducted from source account only
     }
     if (tx.toAccountId === accountId) {
-      return tx.amount; // Money received
+      return tx.amount; // Pure transfer principal received
     }
   }
   return 0;
@@ -98,18 +107,19 @@ export function getTransferHistoricalBalances(
   const toAcc = accounts.find((a) => a.id === tx.toAccountId);
   if (!fromAcc || !toAcc) return null;
 
+  const isInHistory = allTransactions.some((item) => item.id === tx.id);
   let fromBefore = tx.fromBalanceBefore;
   let fromAfter = tx.fromBalanceAfter;
   let toBefore = tx.toBalanceBefore;
   let toAfter = tx.toBalanceAfter;
 
-  if (fromBefore === undefined || fromAfter === undefined) {
+  if (isInHistory || fromBefore === undefined || fromAfter === undefined) {
     const fromHist = getHistoricalBalance(tx.id, fromAcc, allTransactions);
     fromBefore = fromHist.balanceBefore;
     fromAfter = fromHist.balanceAfter;
   }
 
-  if (toBefore === undefined || toAfter === undefined) {
+  if (isInHistory || toBefore === undefined || toAfter === undefined) {
     const toHist = getHistoricalBalance(tx.id, toAcc, allTransactions);
     toBefore = toHist.balanceBefore;
     toAfter = toHist.balanceAfter;

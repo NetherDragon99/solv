@@ -25,10 +25,22 @@ export function evaluateBudgetAlerts(
   const expenseCategories = categories.filter((c) => c.type === 'expense' && c.budgetLimit > 0);
   if (expenseCategories.length === 0) return [];
 
-  // Group current period expense totals by category (internal transfers are never expenses)
+  // Group current period expense totals by category (including embedded transferFee under cat_bank_transfer_fees)
+  const legacyFeeParentIds = new Set(
+    transactions
+      .filter((t) => Boolean(t?.feeOfTransferId))
+      .map((t) => t.feeOfTransferId as string)
+  );
   const spentMap: Record<string, number> = {};
   for (const tx of transactions) {
-    if (tx.type === 'transfer' || Boolean(tx.toAccountId) || isManualAdjustment(tx)) continue;
+    if (isManualAdjustment(tx)) continue;
+    if (tx.type === 'transfer' || Boolean(tx.toAccountId)) {
+      const fee = typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
+      if (fee > 0 && !legacyFeeParentIds.has(tx.id)) {
+        spentMap['cat_bank_transfer_fees'] = (spentMap['cat_bank_transfer_fees'] || 0) + fee;
+      }
+      continue;
+    }
     if (tx.type === 'expense' && tx.categoryId) {
       const tax = typeof tx.taxAmount === 'number' && !isNaN(tx.taxAmount) ? Math.max(0, tx.taxAmount) : 0;
       spentMap[tx.categoryId] = (spentMap[tx.categoryId] || 0) + (tx.amount + tax);

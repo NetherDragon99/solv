@@ -1,4 +1,5 @@
 import {
+  Account,
   Category,
   DefaultTransferFeeRule,
   InstaPayFeePreset,
@@ -307,9 +308,113 @@ export function computeTaxFee(params: {
     }
     return roundHalfUpToCents(Math.max(0, manualRawValue));
   }
+  // Default rules are strictly for transfer fees (e.g. InstaPay), not expense/income taxes
   if (mode === 'default_rule') {
-    // Default rules are strictly for transfer fees (e.g. InstaPay), not expense/income taxes
     return 0;
   }
   return 0;
+}
+
+/**
+ * Merges any legacy standalone transfer-fee transactions (`feeOfTransferId` / `tx_fee_*`)
+ * directly into their parent `transfer` transaction (`transferFee` + `transferFeeBudgetPool`)
+ * and strips `linkedFeeTxId` so transfers and their fees live inside a single unified transaction.
+ */
+export function migrateLegacySeparateTransferFees(
+  transactions: Transaction[],
+  accounts?: Account[],
+  recomputeSnapshots?: (txId: string, account: Account, allTxs: Transaction[]) => { balanceBefore: number; balanceAfter: number }
+): {
+  transactions: Transaction[];
+  removedFeeTxs: Transaction[];
+  changed: boolean;
+} {
+  if (!Array.isArray(transactions) || transactions.length === 0) {
+    return { transactions: [], removedFeeTxs: [], changed: false };
+  }
+
+  const hasAnyLegacy = transactions.some(
+    (tx) => Boolean(tx?.feeOfTransferId || tx?.linkedFeeTxId)
+  );
+  if (!hasAnyLegacy) {
+    return { transactions, removedFeeTxs: [], changed: false };
+  }
+
+  const byId = new Map<string, Transaction>();
+  for (const tx of transactions) {
+    if (tx && tx.id) byId.set(tx.id, tx);
+  }
+
+  const feeByParentId = new Map<string, Transaction>();
+  const removedFeeTxs: Transaction[] = [];
+  const removedIds = new Set<string>();
+
+  for (const tx of transactions) {
+    if (!tx) continue;
+    if (tx.feeOfTransferId && byId.has(tx.feeOfTransferId)) {
+      feeByParentId.set(tx.feeOfTransferId, tx);
+      removedFeeTxs.push(tx);
+      removedIds.add(tx.id);
+    }
+  }
+
+  // Also catch child fee rows referenced only via parent.linkedFeeTxId
+  for (const tx of transactions) {
+    if (tx?.type === 'transfer' && tx.linkedFeeTxId && byId.has(tx.linkedFeeTxId)) {
+      const feeChild = byId.get(tx.linkedFeeTxId)!;
+      if (!removedIds.has(feeChild.id)) {
+        feeByParentId.set(tx.id, feeChild);
+        removedFeeTxs.push(feeChild);
+        removedIds.add(feeChild.id);
+      }
+    }
+  }
+
+  let nextList = transactions
+    .filter((tx) => tx && !removedIds.has(tx.id))
+    .map((tx) => {
+      if (tx.type !== 'transfer' && !tx.linkedFeeTxId) return tx;
+      const feeChild = feeByParentId.get(tx.id);
+      const mergedFee =
+        tx.transferFee && tx.transferFee > 0
+          ? roundHalfUpToCents(tx.transferFee)
+          : feeChild && feeChild.amount > 0
+          ? roundHalfUpToCents(feeChild.amount)
+          : undefined;
+      const mergedPool = tx.transferFeeBudgetPool || feeChild?.budgetPool || (mergedFee ? 'daily' : undefined);
+      const cleaned: Transaction = {
+        ...tx,
+        transferFee: mergedFee,
+        transferFeeMode: mergedFee ? tx.transferFeeMode || 'manual' : undefined,
+        transferFeeBudgetPool: mergedFee ? mergedPool : undefined,
+        linkedFeeTxId: undefined,
+      };
+      return cleaned;
+    });
+
+  if (accounts && accounts.length > 0 && recomputeSnapshots) {
+    const accMap = new Map(accounts.map((a) => [a.id, a]));
+    const snapshotBasis = nextList;
+    nextList = snapshotBasis.map((tx) => {
+      if (tx.type !== 'transfer' || !tx.toAccountId) return tx;
+      const fromAcc = accMap.get(tx.accountId);
+      const toAcc = accMap.get(tx.toAccountId);
+      if (!fromAcc || !toAcc) return tx;
+      const fh = recomputeSnapshots(tx.id, fromAcc, snapshotBasis);
+      const th = recomputeSnapshots(tx.id, toAcc, snapshotBasis);
+      return {
+        ...tx,
+        fromBalanceBefore: fh.balanceBefore,
+        fromBalanceAfter: fh.balanceAfter,
+        toBalanceBefore: th.balanceBefore,
+        toBalanceAfter: th.balanceAfter,
+      };
+    });
+  }
+
+  return {
+    transactions: nextList,
+    removedFeeTxs,
+    changed: true,
+  };
 }

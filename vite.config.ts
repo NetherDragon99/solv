@@ -118,6 +118,15 @@ export default defineConfig(({ command, mode }) => {
           scope: channelScope,
           categories: ['finance', 'productivity', 'utilities'],
           prefer_related_applications: false,
+          share_target: {
+            action: manifestStartUrl,
+            method: 'GET',
+            params: {
+              title: 'shared_sender',
+              text: 'shared_sms',
+              url: 'shared_url',
+            },
+          },
           icons: [
             {
               src: 'pwa-192x192.png',

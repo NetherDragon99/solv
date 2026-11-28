@@ -4,7 +4,7 @@ import { useAppData, useAppUI, useAppActions } from '../context/AppContext';
 import {
   Menu,
   RotateCcw,
-  ReceiptText,
+  MessageSquareText,
   ChevronLeft,
   ChevronRight,
   ArrowDown,
@@ -32,7 +32,7 @@ import { TransactionFilterBar } from '../components/TransactionFilterBar';
 import { SmartBudgetAlertBanner } from '../components/SmartBudgetAlertBanner';
 import { getTransactionBudgetPool } from '../utils/smartBudgetEngine';
 import { useLongPress } from '../hooks/useLongPress';
-import { getActiveBillDraft } from '../utils/billSplitStore';
+import { loadSmsInboxSync } from '../utils/smsInboxStore';
 
 const HomeViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
   const {
@@ -67,14 +67,22 @@ const HomeViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
     toggleBatchTxs,
     setCurrentTab,
     setIsSmartBudgetModalOpen,
-    openBillSplit,
+    setIsDeviceMessagesOpen,
   } = useAppActions();
 
-  const [hasActiveBillDraft, setHasActiveBillDraft] = useState<boolean>(() => Boolean(getActiveBillDraft()));
+  const [smsAttentionCount, setSmsAttentionCount] = useState<number>(() => {
+    const b = loadSmsInboxSync();
+    return b.messages.filter((m) => m.status === 'pending_approval' || m.status === 'queued_offline').length;
+  });
   useEffect(() => {
-    const syncDraft = () => setHasActiveBillDraft(Boolean(getActiveBillDraft()));
-    window.addEventListener('bill_splits_updated', syncDraft);
-    return () => window.removeEventListener('bill_splits_updated', syncDraft);
+    const syncSms = () => {
+      const b = loadSmsInboxSync();
+      setSmsAttentionCount(
+        b.messages.filter((m) => m.status === 'pending_approval' || m.status === 'queued_offline').length
+      );
+    };
+    window.addEventListener('sms_inbox_updated', syncSms);
+    return () => window.removeEventListener('sms_inbox_updated', syncSms);
   }, []);
 
   const isArabic = settings.language === 'ar';
@@ -147,8 +155,14 @@ const HomeViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
     let exp = 0;
 
     for (const tx of filteredTransactions) {
-      // Internal transfers and manual balance adjustments are NEVER counted as spending/income
-      if (tx.type === 'transfer' || Boolean(tx.toAccountId) || isManualAdjustment(tx)) continue;
+      if (isManualAdjustment(tx)) continue;
+      if (tx.type === 'transfer' || Boolean(tx.toAccountId)) {
+        const fee = typeof tx.transferFee === 'number' && !isNaN(tx.transferFee) ? Math.max(0, tx.transferFee) : 0;
+        if (fee > 0 && publicAccountIds.has(tx.accountId)) {
+          exp += fee;
+        }
+        continue;
+      }
       const tax = typeof tx.taxAmount === 'number' && !isNaN(tx.taxAmount) ? Math.max(0, tx.taxAmount) : 0;
       const effectiveTotal = tx.amount + tax;
       if (tx.type === 'income') {
@@ -294,18 +308,20 @@ const HomeViewBase: React.FC<{ isBarsVisible?: boolean }> = () => {
           <span className="text-base font-black tracking-tight text-white">solv</span>
         </div>
 
-        {/* Right: Bill Split & Reset Counter Buttons */}
+        {/* Right: Device Messages Inbox & Reset Counter Buttons */}
         <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => openBillSplit()}
-            aria-label={t('billOpen')}
-            title={t('billOpen')}
+            onClick={() => setIsDeviceMessagesOpen(true)}
+            aria-label={t('smsOpenInboxAria')}
+            title={t('smsInboxTitle')}
             className="relative min-w-[44px] min-h-[44px] w-10 h-10 rounded-xl flex items-center justify-center hover:bg-zinc-800 text-emerald-400 hover:text-emerald-300 transition cursor-pointer active:scale-95"
           >
-            <ReceiptText className="w-5 h-5" />
-            {hasActiveBillDraft && (
-              <span className="absolute top-2 end-2 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-black" />
+            <MessageSquareText className="w-5 h-5" />
+            {smsAttentionCount > 0 && (
+              <span className="absolute top-1.5 end-1.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-400 text-black text-[9px] font-mono font-black flex items-center justify-center ring-2 ring-black">
+                {smsAttentionCount > 9 ? '9+' : smsAttentionCount}
+              </span>
             )}
           </button>
           <button

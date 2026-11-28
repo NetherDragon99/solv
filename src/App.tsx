@@ -65,6 +65,25 @@ let BillSplitPage = React.lazy(loadBillSplitPage);
 const BillSplitGuestView = React.lazy(() =>
   import('./components/BillSplitGuestView').then((m) => ({ default: m.BillSplitGuestView }))
 );
+const CameraTransactionScannerModal = React.lazy(() =>
+  import('./components/CameraTransactionScannerModal').then((m) => ({
+    default: m.CameraTransactionScannerModal,
+  }))
+);
+const DeviceMessagesModal = React.lazy(() =>
+  import('./components/DeviceMessagesModal').then((m) => ({ default: m.DeviceMessagesModal }))
+);
+import { FloatingPendingTransactionsBar } from './components/FloatingPendingTransactionsBar';
+import {
+  DeviceSmsMessage,
+  flushOfflineQueuedMessagesAndScans,
+  hydrateSmsInboxFromIndexedDB,
+  ingestSmsMessages,
+  loadSmsInboxSync,
+  subscribeToSmsWebhookDropbox,
+} from './utils/smsInboxStore';
+import { hydrateProductCatalogFromIndexedDB } from './utils/cameraCatalog';
+import { formatDateToYYYYMMDD, formatTimeToHHMM } from './utils/dateCycle';
 
 interface LazyChunkErrorBoundaryProps {
   isOpen: boolean;
@@ -238,6 +257,11 @@ const MainAppContent: React.FC = () => {
     closeLiveBillView,
     isBillSplitOpen,
     closeBillSplit,
+    isCameraScannerOpen,
+    setIsCameraScannerOpen,
+    isDeviceMessagesOpen,
+    setIsDeviceMessagesOpen,
+    openAddTxModalWithDraft,
     customDialogState,
     closeCustomDialog,
     shareModalState,
@@ -248,6 +272,105 @@ const MainAppContent: React.FC = () => {
     clearAccountSelection,
     clearGlobalSelection,
   } = useApp();
+
+  const [pendingSmsProposals, setPendingSmsProposals] = useState<DeviceSmsMessage[]>(() =>
+    loadSmsInboxSync().messages.filter(
+      (m) => m.status === 'pending_approval' && m.proposal?.isFinancialTransaction
+    )
+  );
+
+  useEffect(() => {
+    hydrateProductCatalogFromIndexedDB().catch(() => {});
+    hydrateSmsInboxFromIndexedDB()
+      .then((b) => {
+        setPendingSmsProposals(
+          b.messages.filter(
+            (m) => m.status === 'pending_approval' && m.proposal?.isFinancialTransaction
+          )
+        );
+      })
+      .catch(() => {});
+
+    const syncPending = () => {
+      const b = loadSmsInboxSync();
+      setPendingSmsProposals(
+        b.messages.filter(
+          (m) => m.status === 'pending_approval' && m.proposal?.isFinancialTransaction
+        )
+      );
+    };
+    window.addEventListener('sms_inbox_updated', syncPending);
+
+    // Web Share Target ingestion (?shared_sms=...&shared_sender=...)
+    try {
+      const url = new URL(window.location.href);
+      const sharedSms = url.searchParams.get('shared_sms');
+      const sharedSender = url.searchParams.get('shared_sender') || 'Shared SMS';
+      if (sharedSms && sharedSms.trim()) {
+        url.searchParams.delete('shared_sms');
+        url.searchParams.delete('shared_sender');
+        url.searchParams.delete('shared_url');
+        window.history.replaceState(window.history.state, '', url.pathname + url.search);
+        ingestSmsMessages(
+          [{ sender: sharedSender, body: sharedSms, receivedAt: Date.now(), source: 'share' }],
+          settings.language
+        ).then(() => {
+          setIsDeviceMessagesOpen(true);
+        });
+      }
+    } catch {}
+
+    const unsubWebhook = subscribeToSmsWebhookDropbox(settings.language);
+    const onReconnect = () => {
+      flushOfflineQueuedMessagesAndScans(settings.language, settings.currencySymbol || '£').catch(
+        () => {}
+      );
+    };
+    window.addEventListener('online', onReconnect);
+    if (navigator.onLine) {
+      onReconnect();
+    }
+
+    return () => {
+      window.removeEventListener('sms_inbox_updated', syncPending);
+      window.removeEventListener('online', onReconnect);
+      unsubWebhook();
+    };
+  }, [settings.language, settings.currencySymbol, setIsDeviceMessagesOpen]);
+
+  const handleOpenMessageAsDraft = (msg: DeviceSmsMessage) => {
+    const p = msg.proposal;
+    const msgDate = new Date(msg.receivedAt || Date.now());
+    let matchedAccId: string | undefined;
+    if (p?.accountHint) {
+      const hint = p.accountHint.toLowerCase();
+      const found = accounts.find(
+        (a) =>
+          a.name.toLowerCase().includes(hint) ||
+          hint.includes(a.name.toLowerCase()) ||
+          (a.notes && a.notes.toLowerCase().includes(hint))
+      );
+      if (found) matchedAccId = found.id;
+    }
+    openAddTxModalWithDraft({
+      source: msg.source === 'camera_queue' ? 'camera' : 'sms',
+      type: p?.type || 'expense',
+      amount: p?.amount && p.amount > 0 ? p.amount : undefined,
+      taxOrFeeAmount: p?.feeOrTax && p.feeOrTax > 0 ? p.feeOrTax : undefined,
+      description: p?.merchantOrTitle || msg.body.slice(0, 80),
+      categoryHint: p?.categoryHint,
+      accountId: matchedAccId,
+      date: formatDateToYYYYMMDD(msgDate),
+      time: formatTimeToHHMM(msgDate),
+      smsMessageId: msg.id,
+      productItem: msg.productMeta
+        ? {
+            ...msg.productMeta,
+            thumbnailDataUrl: msg.thumbnailDataUrl,
+          }
+        : undefined,
+    });
+  };
 
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const barsHiddenRef = useRef<boolean>(false);
@@ -281,7 +404,9 @@ const MainAppContent: React.FC = () => {
     shareModalState.isOpen ||
     !!remainingBalanceModalState?.isOpen ||
     !!selectedAccountId ||
-    isBillSplitOpen;
+    isBillSplitOpen ||
+    isCameraScannerOpen ||
+    isDeviceMessagesOpen;
 
   // Capture PWA beforeinstallprompt event immediately in React state and window.deferredPwaPrompt
   const [deferredPwaPrompt, setDeferredPwaPrompt] = useState<any>(() => {
@@ -844,6 +969,13 @@ const MainAppContent: React.FC = () => {
         className="w-full max-w-none md:max-w-7xl landscape:max-w-none h-full max-h-full bg-black relative shadow-2xl flex flex-col overflow-hidden"
       >
         <ToastContainer />
+        {!isAnyModalOpen && pendingSmsProposals.length > 0 && (
+          <FloatingPendingTransactionsBar
+            pendingItems={pendingSmsProposals}
+            onAcceptItem={handleOpenMessageAsDraft}
+            onOpenInbox={() => setIsDeviceMessagesOpen(true)}
+          />
+        )}
         <CustomDialogModal
           dialogState={customDialogState}
           onClose={closeCustomDialog}
@@ -1045,6 +1177,23 @@ const MainAppContent: React.FC = () => {
             <PinSetupModal
               isOpen={isPinModalOpen}
               onClose={navigateBack}
+            />
+          )}
+
+          {isCameraScannerOpen && (
+            <CameraTransactionScannerModal
+              isOpen={isCameraScannerOpen}
+              onClose={() => setIsCameraScannerOpen(false)}
+              onOpenPrefilledTransaction={openAddTxModalWithDraft}
+            />
+          )}
+
+          {isDeviceMessagesOpen && (
+            <DeviceMessagesModal
+              isOpen={isDeviceMessagesOpen}
+              onClose={() => setIsDeviceMessagesOpen(false)}
+              onAcceptProposalToModal={handleOpenMessageAsDraft}
+              onCreateManualFromMessage={handleOpenMessageAsDraft}
             />
           )}
 

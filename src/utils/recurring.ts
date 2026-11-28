@@ -963,10 +963,7 @@ export function checkAndProcessRecurring(
         transferFeeInputType: rec.transferFeeInputType,
         transferFeeRawValue: rec.transferFeeRawValue,
         transferFeeBudgetPool: rec.transferFeeBudgetPool,
-        linkedFeeTxId:
-          rec.type === 'transfer' && rec.transferFee && rec.transferFee > 0
-            ? `tx_fee_${detId}`
-            : undefined,
+        linkedFeeTxId: undefined,
         createdAt: occ.timestampMs,
         updatedAt: nowMs,
         isFromRecurring: true,

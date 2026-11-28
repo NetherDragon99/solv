@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAppActions, useAppData, useAppUI } from '../context/AppContext';
-import { Home, Target, PieChart, Landmark, Calculator, Plus } from 'lucide-react';
+import { Home, Target, PieChart, Landmark, Calculator, Plus, Camera, ReceiptText, Wallet } from 'lucide-react';
+import { getActiveBillDraft } from '../utils/billSplitStore';
 
 export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ isBarsVisible: propBarsVisible }) => {
   const { budgetAlerts, settings, t } = useAppData();
@@ -31,6 +32,8 @@ export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ i
     activeSharedSnapshot,
     activeShareDetailFolder,
     isBillSplitOpen,
+    isCameraScannerOpen,
+    isDeviceMessagesOpen,
     isTxMultiSelect,
     isCategoryMultiSelect,
     isAccountMultiSelect,
@@ -41,9 +44,32 @@ export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ i
     openAddTxModal,
     openAddAccountModal,
     openAddCategoryModal,
+    openBillSplit,
+    setIsCameraScannerOpen,
   } = useAppActions();
 
   const isRtl = settings.language === 'ar';
+  const [isFabMenuOpen, setIsFabMenuOpen] = useState<boolean>(false);
+  const [hasActiveBillDraft, setHasActiveBillDraft] = useState<boolean>(() => Boolean(getActiveBillDraft()));
+
+  useEffect(() => {
+    const syncDraft = () => setHasActiveBillDraft(Boolean(getActiveBillDraft()));
+    window.addEventListener('bill_splits_updated', syncDraft);
+    return () => window.removeEventListener('bill_splits_updated', syncDraft);
+  }, []);
+
+  useEffect(() => {
+    setIsFabMenuOpen(false);
+  }, [currentTab]);
+
+  useEffect(() => {
+    if (!isFabMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsFabMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isFabMenuOpen]);
 
   const isAnySubPageOrModalOpen = Boolean(
     selectedAccountId ||
@@ -70,6 +96,8 @@ export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ i
     activeSharedSnapshot ||
     activeShareDetailFolder ||
     isBillSplitOpen ||
+    isCameraScannerOpen ||
+    isDeviceMessagesOpen ||
     isTxMultiSelect ||
     isCategoryMultiSelect ||
     isAccountMultiSelect ||
@@ -81,6 +109,7 @@ export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ i
   // Floating Action Button (+):
   // Hide on calculator tab, subpages, open modals, multi-select mode
   const showFab = currentTab !== 'calculator' && !isAnySubPageOrModalOpen;
+  const usesExpandableFabMenu = currentTab === 'home' || currentTab === 'insights';
 
   // Floating action button click handler:
   const handleFabClick = () => {
@@ -89,7 +118,7 @@ export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ i
     } else if (currentTab === 'budget') {
       openAddCategoryModal();
     } else {
-      openAddTxModal();
+      setIsFabMenuOpen((prev) => !prev);
     }
   };
 
@@ -111,19 +140,94 @@ export const Navigation: React.FC<{ isBarsVisible?: boolean }> = React.memo(({ i
 
   return (
     <>
-      {/* Floating Action Button (+) - Hidden on calculator tab or subpages */}
+      {/* Backdrop when expandable + menu is open */}
+      {showFab && usesExpandableFabMenu && isFabMenuOpen && (
+        <div
+          onClick={() => setIsFabMenuOpen(false)}
+          className="fixed inset-0 z-[29] bg-black/45 transition-opacity duration-200"
+        />
+      )}
+
+      {/* Floating Action Button (+) with Spring Pop-Out Menu (Add Tx / Camera / Bills) */}
       {showFab && (
         <div
           data-hidden={!isNavVisible ? 'true' : undefined}
-          className="app-auto-fab fixed bottom-24 md:bottom-28 landscape:bottom-20 right-4 md:right-8 rtl:right-auto rtl:left-4 md:rtl:left-8 end-4 md:end-8 pointer-events-none z-30"
+          className="app-auto-fab fixed bottom-24 md:bottom-28 landscape:bottom-20 end-4 md:end-8 pointer-events-none z-30 flex flex-col items-end gap-2.5"
         >
+          {usesExpandableFabMenu && (
+            <div
+              aria-hidden={!isFabMenuOpen}
+              className={`flex flex-col items-end gap-2 origin-bottom-right rtl:origin-bottom-left transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${
+                isFabMenuOpen
+                  ? 'pointer-events-auto opacity-100 scale-100 translate-y-0'
+                  : 'pointer-events-none opacity-0 scale-50 translate-y-8'
+              }`}
+            >
+              {/* 1. Split Bill (Bills) */}
+              <button
+                type="button"
+                tabIndex={isFabMenuOpen ? 0 : -1}
+                onClick={() => {
+                  setIsFabMenuOpen(false);
+                  openBillSplit();
+                }}
+                className="relative min-h-[44px] ps-4 pe-3 py-2 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-strong)] shadow-xl flex items-center gap-2.5 text-xs font-extrabold text-[var(--text-primary)] cursor-pointer active:scale-[0.97]"
+              >
+                <span>{t('fabMenuBills')}</span>
+                <span className="w-8 h-8 rounded-full bg-[var(--accent-soft)] text-[var(--accent-primary)] flex items-center justify-center relative">
+                  <ReceiptText className="w-4 h-4" />
+                  {hasActiveBillDraft && (
+                    <span className="absolute -top-0.5 -end-0.5 w-2.5 h-2.5 rounded-full bg-[var(--status-warning)]" />
+                  )}
+                </span>
+              </button>
+
+              {/* 2. Add by Smart Camera */}
+              <button
+                type="button"
+                tabIndex={isFabMenuOpen ? 0 : -1}
+                onClick={() => {
+                  setIsFabMenuOpen(false);
+                  setIsCameraScannerOpen(true);
+                }}
+                className="min-h-[44px] ps-4 pe-3 py-2 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-strong)] shadow-xl flex items-center gap-2.5 text-xs font-extrabold text-[var(--text-primary)] cursor-pointer active:scale-[0.97]"
+              >
+                <span>{t('fabMenuCamera')}</span>
+                <span className="w-8 h-8 rounded-full bg-[var(--accent-soft)] text-[var(--accent-primary)] flex items-center justify-center">
+                  <Camera className="w-4 h-4" />
+                </span>
+              </button>
+
+              {/* 3. Add Regular Transaction */}
+              <button
+                type="button"
+                tabIndex={isFabMenuOpen ? 0 : -1}
+                onClick={() => {
+                  setIsFabMenuOpen(false);
+                  openAddTxModal();
+                }}
+                className="min-h-[44px] ps-4 pe-3 py-2 rounded-full bg-[var(--accent-primary)] border border-[var(--accent-primary)] shadow-xl flex items-center gap-2.5 text-xs font-extrabold text-[var(--text-on-accent)] cursor-pointer active:scale-[0.97]"
+              >
+                <span>{t('fabMenuAddTx')}</span>
+                <span className="w-8 h-8 rounded-full bg-black/20 flex items-center justify-center">
+                  <Wallet className="w-4 h-4" />
+                </span>
+              </button>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={handleFabClick}
+            aria-expanded={usesExpandableFabMenu ? isFabMenuOpen : undefined}
             aria-label={getFabAriaLabel()}
             className="pointer-events-auto min-w-[44px] min-h-[44px] w-14 h-14 md:w-16 md:h-16 rounded-full bg-gradient-to-br from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 active:scale-95 text-black flex items-center justify-center shadow-2xl shadow-emerald-950/70 border border-emerald-300/40 transition cursor-pointer"
           >
-            <Plus className="w-7 h-7 md:w-8 md:h-8 stroke-[2.5]" />
+            <Plus
+              className={`w-7 h-7 md:w-8 md:h-8 stroke-[2.5] transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${
+                usesExpandableFabMenu && isFabMenuOpen ? 'rotate-45' : 'rotate-0'
+              }`}
+            />
           </button>
         </div>
       )}

@@ -122,6 +122,38 @@ export interface Transaction {
   shareId?: string;
   excludedShareIds?: string[]; // IDs of shared spaces where this transaction was deleted by owner and should not be propagated
   billSplit?: TransactionBillSplitRef;
+  scannedProductCode?: string;
+  sourceSmsId?: string;
+}
+
+export interface PendingTxProductMeta {
+  catalogId: string;
+  code: string;
+  isTemporaryCode: boolean;
+  name: string;
+  savedPrice?: number;
+  serverPrice?: number;
+  aiSuggestedPrice?: number;
+  aiVerifiedPrintedPrice?: boolean;
+  visualHash?: string;
+  thumbnailDataUrl?: string;
+  isNewItem?: boolean;
+}
+
+export interface PendingTxPrefillDraft {
+  source: 'camera' | 'sms';
+  type?: TransactionType;
+  amount?: number;
+  taxOrFeeAmount?: number;
+  description?: string;
+  categoryId?: string;
+  categoryHint?: string;
+  accountId?: string;
+  toAccountId?: string;
+  date?: string;
+  time?: string;
+  productItem?: PendingTxProductMeta;
+  smsMessageId?: string;
 }
 
 export type WeekStartDay = 'saturday' | 'sunday' | 'monday';

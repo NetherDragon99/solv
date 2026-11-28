@@ -384,8 +384,12 @@ const GroupedTransactionListBase: React.FC<GroupedTransactionListProps> = ({
       // Delta - exclude manual balance adjustments so day and month totals reflect real activity
       let delta = 0;
       if (!isManualAdjustment(tx)) {
-        if (tx.type === 'income') delta = tx.amount;
-        else if (tx.type === 'expense') delta = -tx.amount;
+        const tax = typeof tx.taxAmount === 'number' && !isNaN(tx.taxAmount) ? Math.max(0, tx.taxAmount) : 0;
+        if (tx.type === 'income') delta = tx.amount + tax;
+        else if (tx.type === 'expense') delta = -(tx.amount + tax);
+        else if (tx.type === 'transfer' && tx.transferFee && tx.transferFee > 0) {
+          delta = -tx.transferFee;
+        }
       }
 
       monthEntry.monthNet += delta;
